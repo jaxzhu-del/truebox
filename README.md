@@ -49,6 +49,12 @@ python3 truebox.py build
 # 2. spin up a workspace (2 GB RAM, 2 CPUs cap — host stays snappy)
 python3 truebox.py up --name demo --memory 2g --cpus 2
 
+# 2b. change limits on a RUNNING workspace (no restart needed)
+python3 truebox.py update demo --memory 4g --cpus 1
+
+# 2c. GPU passthrough (opt-in; needs NVIDIA Container Toolkit on host)
+python3 truebox.py up --name gpu --gpus all
+
 # 3. run commands inside
 python3 truebox.py exec demo -- python3 --version
 
@@ -61,6 +67,7 @@ python3 truebox.py serve --open
 # -> dashboard at http://127.0.0.1:18790/
 # API info at http://127.0.0.1:18790/api :
 # POST /workspaces  {"name":"demo"}  -> create
+# POST /workspaces/demo/update  {"memory":"4g","cpus":"1"}  -> live-update limits
 # POST /workspaces/demo/exec  {"cmd":["ls","/workspace"]}  -> run
 # GET  /workspaces/demo/screenshot  -> PNG
 # DELETE /workspaces/demo  -> destroy
@@ -102,9 +109,19 @@ curl -X POST localhost:18790/workspaces/agent-1/exec \
  │  │ x11vnc + noVNC (:6080)        │  │
  │  │ python3 / node / git / tmux   │  │
  │  └───────────────────────────────┘  │
- │  --memory 2g --cpus 2 --pids-limit   │
+ │  --memory 2g --memory-swap 2g --cpus 2 --pids-limit 512 [--gpus]  │
  └─────────────────────────────────────┘
 ```
+
+### Resource limits 资源配额
+
+| 维度 | 创建时 | 运行中调整 | 说明 |
+|---|---|---|---|
+| 内存 / CPU | `--memory` `--cpus` | `update --memory --cpus`（无需重启） | cgroup 硬限制 |
+| Swap | — | — | 默认与内存等值，工作区吃不到宿主机 swap |
+| 进程数 | — | — | `--pids-limit 512` 防 fork 炸弹 |
+| GPU | `--gpus all`（可选） | — | 需宿主机装 NVIDIA Container Toolkit |
+| 磁盘 | — | — | `list` 显示用量；Docker 无可移植的硬磁盘配额，不做假限制 |
 
 ## Roadmap 路线图
 
