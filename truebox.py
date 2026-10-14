@@ -35,7 +35,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
