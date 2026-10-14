@@ -32,12 +32,16 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
 STATE_FILE = STATE_DIR / "workspaces.json"
-CDP_PORT = 9222
+# In-container CDP port, published to the host on a random port.
+# NOTE: newer Chromium ignores --remote-debugging-address=0.0.0.0 and binds CDP
+# to container loopback 127.0.0.1:9222 only. entrypoint.sh bridges it with socat
+# (0.0.0.0:9223 -> 127.0.0.1:9222), so the port Docker publishes is 9223.
+CDP_PORT = 9223
 
 
 # ---------------------------------------------------------------- helpers
@@ -256,7 +260,7 @@ def op_up(name, memory="2g", cpus="2"):
     docker("run", "-d", "--name", c,
            "--memory", memory, "--cpus", cpus,
            "--pids-limit", "512",
-           "-p", "127.0.0.1::9222", "-p", "127.0.0.1::6080",
+           "-p", f"127.0.0.1::{CDP_PORT}", "-p", "127.0.0.1::6080",
            "-v", f"{PREFIX}{name}-data:/workspace",
            IMAGE)
     try:

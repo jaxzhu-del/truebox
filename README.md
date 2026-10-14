@@ -97,7 +97,8 @@ curl -X POST localhost:18790/workspaces/agent-1/exec \
  │  workspace container (per agent)    │
  │  ┌───────────────────────────────┐  │
  │  │ Xvfb :99  (virtual display)   │  │
- │  │ Chromium --headed  (CDP :9222)│  │
+ │  │ Chromium --headed  (CDP 127.0.0.1:9222 │  │
+│  │ --socat--> 0.0.0.0:9223, published)  │  │
  │  │ x11vnc + noVNC (:6080)        │  │
  │  │ python3 / node / git / tmux   │  │
  │  └───────────────────────────────┘  │

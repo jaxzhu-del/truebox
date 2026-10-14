@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
-        xvfb x11vnc novnc websockify \
+        xvfb x11vnc novnc websockify socat \
         python3 nodejs npm \
         git curl wget ca-certificates tmux \
         fonts-noto-cjk \
@@ -23,7 +23,7 @@ WORKDIR /workspace
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 9222 5900 6080
+EXPOSE 9223 5900 6080
 
 USER agent
 ENTRYPOINT ["/entrypoint.sh"]
