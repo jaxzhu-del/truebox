@@ -23,6 +23,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -31,7 +32,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -77,10 +78,21 @@ def cname(name):
 
 
 def host_port(container, container_port):
-    """Mapped host port for a container port, e.g. '49153'."""
+    """Mapped host port for a container port, e.g. '49153'.
+
+    Robust against `docker port` printing several lines
+    (IPv4 + IPv6 mappings): prefers the 127.0.0.1 line.
+    """
     out = docker("port", container, str(container_port))
-    # format: "127.0.0.1:49153"
-    return out.rsplit(":", 1)[-1].strip()
+    for line in out.splitlines():
+        if "127.0.0.1" in line:
+            m = re.search(r":(\d+)\s*$", line)
+            if m:
+                return m.group(1)
+    m = re.search(r"(\d+)\s*$", out, re.MULTILINE)
+    if m:
+        return m.group(1)
+    raise TrueBoxError(f"could not parse port mapping: {out!r}")
 
 
 def wait_cdp(port, timeout=90):
@@ -240,8 +252,13 @@ def op_up(name, memory="2g", cpus="2"):
         raise TrueBoxError("container started but port mapping unreadable; "
                            f"check `docker logs {c}`")
     if not wait_cdp(port):
-        raise TrueBoxError("Chromium remote debugging did not come up in time; "
-                           f"check `docker logs {c}`")
+        try:
+            logs = docker("logs", "--tail", "30", c)
+        except TrueBoxError:
+            logs = "(could not read container logs)"
+        raise TrueBoxError(
+            "Chromium remote debugging did not come up in time.\n"
+            f"--- docker logs {c} (tail 30) ---\n{logs}")
     vnc_port = host_port(c, 6080)
     info = {"container": c, "cdp_port": port, "vnc_port": vnc_port,
             "memory": memory, "cpus": str(cpus),
