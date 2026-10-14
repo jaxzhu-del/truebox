@@ -2,7 +2,7 @@
 """
 TrueBox 云真机 — turn any device into an agent's cloud workstation.
 
-A tiny control plane (CLI + HTTP API) that spins up lightweight,
+A tiny control plane (CLI + HTTP API + Web UI) that spins up lightweight,
 resource-capped containers for AI agents. Every workspace ships with a
 headed Chromium (virtual display + remote debugging), terminal, filesystem
 and dev tools — a real machine an agent can actually use.
@@ -14,7 +14,8 @@ Requires: Docker (Docker Desktop on Win/Mac, docker.io on Linux incl. RISC-V).
     python truebox.py list
     python truebox.py exec demo -- python3 --version
     python truebox.py screenshot demo -o shot.png
-    python truebox.py serve --port 18790    # HTTP API for agents
+    python truebox.py serve                 # Web UI at http://127.0.0.1:18790/
+    python truebox.py serve --open          # ...and open it in your browser
     python truebox.py down demo
 """
 
@@ -30,7 +31,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -251,7 +252,15 @@ def op_up(name, memory="2g", cpus="2"):
 
 
 def op_list():
-    return load_state()
+    state = load_state()
+    for _name, info in state.items():
+        try:
+            running = docker("ps", "--filter", f"name={info['container']}",
+                             "--format", "{{.Names}}")
+        except TrueBoxError:
+            running = ""
+        info["running"] = bool(running)
+    return state
 
 
 def op_exec(name, cmd):
@@ -277,6 +286,194 @@ def op_down(name):
     docker("rm", "-f", state[name]["container"])
     del state[name]
     save_state(state)
+
+
+# ---------------------------------------------------------------- Web UI
+
+UI_HTML = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrueBox 云真机</title>
+<style>
+:root { --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+        --dim: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { display: flex; align-items: center; justify-content: space-between;
+         padding: 14px 22px; border-bottom: 1px solid var(--border); }
+header h1 { font-size: 18px; margin: 0; }
+header h1 small { color: var(--dim); font-weight: normal; font-size: 12px; margin-left: 8px; }
+header .actions { display: flex; gap: 8px; align-items: center; }
+main { max-width: 1080px; margin: 0 auto; padding: 20px 22px 60px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+         padding: 16px 18px; margin-bottom: 20px; }
+.panel h2 { margin: 0 0 12px; font-size: 14px; color: var(--dim); font-weight: 600; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12px; color: var(--dim); }
+input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                border-radius: 6px; padding: 8px 10px; font-size: 14px; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+button { background: var(--accent); color: #fff; border: none; border-radius: 6px;
+         padding: 8px 14px; font-size: 14px; cursor: pointer; }
+button:hover { filter: brightness(1.1); }
+button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+button.danger { background: transparent; border: 1px solid var(--red); color: var(--red); }
+button:disabled { opacity: .5; cursor: default; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.card h3 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+.pill { font-size: 11px; padding: 2px 8px; border-radius: 20px; }
+.pill.on { background: rgba(63,185,80,.15); color: var(--green); border: 1px solid var(--green); }
+.pill.off { background: rgba(248,81,73,.12); color: var(--red); border: 1px solid var(--red); }
+.meta { color: var(--dim); font-size: 12.5px; line-height: 1.7; margin: 8px 0 12px; }
+.meta b { color: var(--text); font-weight: 600; }
+.btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.btnrow button { font-size: 13px; padding: 6px 12px; }
+.empty { color: var(--dim); text-align: center; padding: 40px 0; }
+#modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+         align-items: center; justify-content: center; z-index: 10; padding: 20px; }
+#modal.open { display: flex; }
+.dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+          max-width: 860px; width: 100%; max-height: 90vh; overflow: auto; padding: 18px; }
+.dialog h3 { margin: 0 0 12px; font-size: 15px; }
+.dialog img { width: 100%; border-radius: 6px; border: 1px solid var(--border); }
+.dialog pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+              padding: 12px; font-size: 12.5px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
+.dialog .close { float: right; }
+.execrow { display: flex; gap: 8px; margin-bottom: 10px; }
+.execrow input { flex: 1; font-family: monospace; }
+#toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+         background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+         padding: 10px 18px; font-size: 13px; display: none; z-index: 20; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TrueBox 云真机 <small>agent cloud workstations</small></h1>
+  <div class="actions">
+    <button class="ghost" onclick="window.open('/api','_blank')">API</button>
+    <button class="ghost" onclick="refresh()">刷新</button>
+  </div>
+</header>
+<main>
+  <div class="panel">
+    <h2>新建工作区</h2>
+    <div class="row">
+      <div class="field"><label>名称</label><input id="f-name" placeholder="demo"></div>
+      <div class="field"><label>内存</label>
+        <select id="f-mem"><option>1g</option><option selected>2g</option><option>4g</option><option>8g</option></select></div>
+      <div class="field"><label>CPU</label>
+        <select id="f-cpu"><option>1</option><option selected>2</option><option>4</option></select></div>
+      <div class="field"><label>&nbsp;</label><button id="btn-create" onclick="createWs()">启动工作区</button></div>
+    </div>
+  </div>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" style="display:none">还没有工作区，在上面建一个吧。</div>
+</main>
+<div id="modal"><div class="dialog">
+  <button class="ghost close" onclick="closeModal()">关闭</button>
+  <h3 id="dlg-title"></h3>
+  <div id="dlg-body"></div>
+</div></div>
+<div id="toast"></div>
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.status); }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : r.blob();
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg;
+  t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 2500); }
+
+async function refresh() {
+  try {
+    const ws = await api('/workspaces');
+    const names = Object.keys(ws);
+    document.getElementById('empty').style.display = names.length ? 'none' : 'block';
+    document.getElementById('grid').innerHTML = names.map(n => card(n, ws[n])).join('');
+  } catch (e) { toast('刷新失败: ' + e.message); }
+}
+function card(n, w) {
+  const pill = w.running ? '<span class="pill on">运行中</span>' : '<span class="pill off">已停止</span>';
+  return `<div class="card"><h3>${esc(n)} ${pill}</h3>
+    <div class="meta">内存 <b>${esc(w.memory || '-')}</b> · CPU <b>${esc(w.cpus || '-')}</b><br>
+    CDP 端口 <b>${esc(w.cdp_port || '-')}</b> · 创建于 ${esc(w.created || '-')}</div>
+    <div class="btnrow">
+      <button class="ghost" onclick="shot('${esc(n)}')">截图</button>
+      <button class="ghost" onclick="execDlg('${esc(n)}')">执行命令</button>
+      <button class="ghost" onclick="vnc('${esc(n)}','${esc(w.vnc_port || '')}')">浏览器查看</button>
+      <button class="danger" onclick="delWs('${esc(n)}')">删除</button>
+    </div></div>`;
+}
+async function createWs() {
+  const name = document.getElementById('f-name').value.trim();
+  if (!name) { toast('先填个名称'); return; }
+  const btn = document.getElementById('btn-create'); btn.disabled = true; btn.textContent = '启动中…';
+  try {
+    await api('/workspaces', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, memory: document.getElementById('f-mem').value,
+                             cpus: document.getElementById('f-cpu').value }) });
+    document.getElementById('f-name').value = '';
+    toast('工作区 ' + name + ' 已启动'); refresh();
+  } catch (e) { toast('启动失败: ' + e.message); }
+  btn.disabled = false; btn.textContent = '启动工作区';
+}
+async function delWs(n) {
+  if (!confirm('删除工作区 ' + n + '？容器和数据都会被清理。')) return;
+  try { await api('/workspaces/' + encodeURIComponent(n), { method: 'DELETE' });
+    toast('已删除 ' + n); refresh(); } catch (e) { toast('删除失败: ' + e.message); }
+}
+async function shot(n) {
+  openDlg('截图 — ' + n, '<p style="color:var(--dim)">抓取中…</p>');
+  try {
+    const blob = await api('/workspaces/' + encodeURIComponent(n) + '/screenshot');
+    openDlg('截图 — ' + n, `<img src="${URL.createObjectURL(blob)}">`);
+  } catch (e) { openDlg('截图 — ' + n, `<p style="color:var(--red)">失败: ${esc(e.message)}</p>`); }
+}
+function execDlg(n) {
+  openDlg('执行命令 — ' + n,
+    `<div class="execrow"><input id="exec-in" placeholder="例如：ls /workspace" onkeydown="if(event.key==='Enter')runExec('${esc(n)}')">
+     <button onclick="runExec('${esc(n)}')">运行</button></div><pre id="exec-out">等待输入…</pre>`);
+  setTimeout(() => document.getElementById('exec-in').focus(), 50);
+}
+async function runExec(n) {
+  const cmd = document.getElementById('exec-in').value.trim();
+  if (!cmd) return;
+  const out = document.getElementById('exec-out'); out.textContent = '运行中…';
+  const parts = cmd.match(/(?:[^\\s"]+|"[^"]*")+/g).map(s => s.replace(/^"|"$/g, ''));
+  try {
+    const r = await api('/workspaces/' + encodeURIComponent(n) + '/exec',
+      { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ cmd: parts }) });
+    out.textContent = '$ ' + cmd + '\\n' + (r.stdout || '') + (r.stderr ? '\\n[stderr]\\n' + r.stderr : '')
+      + '\\n[exit ' + r.returncode + ']';
+  } catch (e) { out.textContent = '失败: ' + e.message; }
+}
+function vnc(n, port) {
+  if (!port) { toast('VNC 端口未知'); return; }
+  window.open(`http://${location.hostname}:${port}/vnc.html`, '_blank');
+}
+function openDlg(title, html) {
+  document.getElementById('dlg-title').textContent = title;
+  document.getElementById('dlg-body').innerHTML = html;
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+refresh(); setInterval(refresh, 8000);
+</script>
+</body>
+</html>
+"""
 
 
 # ---------------------------------------------------------------- CLI
@@ -307,9 +504,7 @@ def cmd_list(args):
         return
     print(f"{'NAME':<16}{'CONTAINER':<24}{'CDP':<8}{'CREATED'}")
     for name, info in state.items():
-        running = docker("ps", "--filter", f"name={info['container']}",
-                         "--format", "{{.Names}}")
-        mark = "" if running else " (stopped)"
+        mark = "" if info.get("running") else " (stopped)"
         print(f"{name:<16}{info['container']:<24}"
               f"{info.get('cdp_port', '-'):<8}{info.get('created', '-')}{mark}")
 
@@ -335,16 +530,22 @@ def cmd_down(args):
 def cmd_serve(args):
     try:
         from fastapi import FastAPI
-        from fastapi.responses import JSONResponse, Response
+        from fastapi.responses import HTMLResponse, JSONResponse, Response
         import uvicorn
     except ImportError:
-        raise TrueBoxError("API mode needs: pip install -r requirements.txt")
-    app = FastAPI(title="TrueBox API", version=VERSION)
+        raise TrueBoxError("serve mode needs: pip install -r requirements.txt")
+    app = FastAPI(title="TrueBox", version=VERSION)
 
-    @app.get("/")
-    def root():
+    @app.get("/", response_class=HTMLResponse)
+    def ui():
+        return UI_HTML
+
+    @app.get("/api")
+    def api_info():
         return {"name": "TrueBox 云真机", "version": VERSION,
-                "hint": "POST /workspaces to create an agent workspace"}
+                "ui": "/", "endpoints": ["GET /workspaces", "POST /workspaces",
+                "POST /workspaces/{name}/exec", "GET /workspaces/{name}/screenshot",
+                "DELETE /workspaces/{name}"]}
 
     @app.get("/workspaces")
     def api_list():
@@ -365,11 +566,12 @@ def cmd_serve(args):
         if not cmd:
             return JSONResponse({"error": "body.cmd required, e.g. {\"cmd\": [\"ls\", \"/workspace\"]}"},
                                 status_code=400)
+        state = load_state()
+        if name not in state:
+            return JSONResponse({"error": f"no workspace '{name}'"}, status_code=404)
         try:
-            p = subprocess.run(["docker", "exec", "-i", cname(name)] + cmd,
+            p = subprocess.run(["docker", "exec", "-i", state[name]["container"]] + cmd,
                                capture_output=True, text=True, timeout=300)
-        except TrueBoxError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
         except subprocess.TimeoutExpired:
             return JSONResponse({"error": "command timed out after 300s"}, status_code=504)
         return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
@@ -390,7 +592,12 @@ def cmd_serve(args):
             return JSONResponse({"error": str(e)}, status_code=400)
         return {"deleted": name}
 
-    print(f"TrueBox API on http://{args.host}:{args.port}  (Ctrl+C to stop)")
+    url = f"http://{args.host}:{args.port}/"
+    print(f"TrueBox UI + API at {url}  (Ctrl+C to stop)")
+    if args.open:
+        import threading
+        import webbrowser
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
@@ -427,9 +634,10 @@ def main():
     p.add_argument("name")
     p.set_defaults(func=cmd_down)
 
-    p = sub.add_parser("serve", help="HTTP API for agents")
+    p = sub.add_parser("serve", help="Web UI + HTTP API for agents")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=18790)
+    p.add_argument("--open", action="store_true", help="open the UI in your browser")
     p.set_defaults(func=cmd_serve)
 
     args = ap.parse_args()

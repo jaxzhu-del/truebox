@@ -27,6 +27,9 @@ AI 能真正动手的真机。每个容器都有资源上限，不影响设备�
   capped. 轻量，不拖慢宿主机。
 - 🔌 **Agent API** — `truebox.py serve` exposes workspaces over HTTP:
   create, exec, screenshot, destroy. 给 agent 用的 HTTP 接口。
+- 🖥️ **Web UI** — the same `serve` command opens a dashboard in your browser:
+  workspace cards, one-click create/delete, command console, screenshots,
+  live browser view. 一套 UI 跑遍 Win / Mac / Linux。
 - 🌍 **Multi-arch** — `debian:bookworm-slim` base runs on **amd64, arm64, riscv64**;
   Chromium comes from distro repos (no vendor x86-only builds).
   Win (Docker Desktop) / macOS / Linux / RISC-V Linux 全支持。
@@ -52,9 +55,11 @@ python3 truebox.py exec demo -- python3 --version
 # 4. see what the agent sees
 python3 truebox.py screenshot demo -o shot.png
 
-# 5. HTTP API for agents
+# 5. Web UI + HTTP API (one command, works on Win/Mac/Linux)
 pip install -r requirements.txt
-python3 truebox.py serve --port 18790
+python3 truebox.py serve --open
+# -> dashboard at http://127.0.0.1:18790/
+# API info at http://127.0.0.1:18790/api :
 # POST /workspaces  {"name":"demo"}  -> create
 # POST /workspaces/demo/exec  {"cmd":["ls","/workspace"]}  -> run
 # GET  /workspaces/demo/screenshot  -> PNG
@@ -63,6 +68,9 @@ python3 truebox.py serve --port 18790
 # 6. tear down
 python3 truebox.py down demo
 ```
+
+The dashboard lets you create / delete workspaces, run commands, take
+screenshots and open the live browser view (noVNC) — no CLI needed.
 
 Then point the agent at it:
 
@@ -99,11 +107,20 @@ curl -X POST localhost:18790/workspaces/agent-1/exec \
 
 ## Roadmap 路线图
 
-- **v0.1** (this release) — CLI + HTTP API, headed Chromium, screenshot via CDP,
+## Releases 各系统版本
+
+Push a tag like `v0.2.0` and GitHub Actions builds standalone executables
+for **Windows / macOS / Linux** (PyInstaller, no Python needed) and attaches
+them to the GitHub Release. Every push also runs a full smoke test
+(build → up → exec → screenshot → API → down) on a real Docker host.
+
+- **v0.1** — CLI + HTTP API, headed Chromium, screenshot via CDP,
   multi-arch Dockerfile (amd64/arm64/riscv64).
-- **v0.2** — MCP server mode (`truebox.py mcp`): workspaces as MCP tools so
+- **v0.2** (this release) — Web UI dashboard, `--open` flag, CI smoke test,
+  per-OS executables on Release.
+- **v0.3** — MCP server mode (`truebox.py mcp`): workspaces as MCP tools so
   dsh / Claude Code / OpenClaw drive them natively.
-- **v0.3** — multi-node registry: register several devices, schedule workspaces
+- **v0.4** — multi-node registry: register several devices, schedule workspaces
   across them — your devices become one agent cloud. 多设备组网。
 - Later — GPU passthrough profiles, workspace snapshots/templates.
 
