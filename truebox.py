@@ -34,7 +34,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -253,18 +253,24 @@ def cdp_screenshot(cdp_port, timeout=30):
 
 # ---------------------------------------------------------------- core ops
 
-def op_up(name, memory="2g", cpus="2"):
+def op_up(name, memory="2g", cpus="2", gpus=None):
     state = load_state()
     if name in state:
         raise TrueBoxError(f"workspace '{name}' already exists "
                            f"(truebox.py down {name} first)")
     c = cname(name)
-    docker("run", "-d", "--name", c,
-           "--memory", memory, "--cpus", cpus,
-           "--pids-limit", "512",
-           "-p", f"127.0.0.1::{CDP_PORT}", "-p", "127.0.0.1::6080",
-           "-v", f"{PREFIX}{name}-data:/workspace",
-           IMAGE)
+    # --memory-swap == --memory: no extra swap beyond RAM, so a workspace
+    # can never spill into host swap and slow down the device.
+    run_args = ["run", "-d", "--name", c,
+                "--memory", memory, "--memory-swap", memory, "--cpus", cpus,
+                "--pids-limit", "512"]
+    if gpus:
+        # Opt-in GPU passthrough; needs NVIDIA Container Toolkit on the host.
+        run_args += ["--gpus", gpus]
+    run_args += ["-p", f"127.0.0.1::{CDP_PORT}", "-p", "127.0.0.1::6080",
+                 "-v", f"{PREFIX}{name}-data:/workspace",
+                 IMAGE]
+    docker(*run_args)
     try:
         port = host_port(c, CDP_PORT)
     except TrueBoxError:
@@ -291,11 +297,38 @@ def op_up(name, memory="2g", cpus="2"):
             f"--- docker logs {c} (tail 30) ---\n{logs}")
     vnc_port = host_port(c, 6080)
     info = {"container": c, "cdp_port": port, "vnc_port": vnc_port,
-            "memory": memory, "cpus": str(cpus),
+            "memory": memory, "cpus": str(cpus), "gpus": gpus,
             "created": time.strftime("%Y-%m-%d %H:%M:%S")}
     state[name] = info
     save_state(state)
     return info
+
+
+def op_update(name, memory=None, cpus=None):
+    """Change memory/CPU limits of a RUNNING workspace (docker update)."""
+    state = load_state()
+    if not memory and not cpus:
+        raise TrueBoxError("nothing to update: pass --memory and/or --cpus")
+    if name not in state:
+        raise TrueBoxError(f"no workspace '{name}'")
+    args = []
+    if memory:
+        args += ["--memory", memory]
+    if cpus:
+        args += ["--cpus", str(cpus)]
+    c = state[name]["container"]
+    try:
+        docker("update", *args, c)
+    except TrueBoxError as e:
+        raise TrueBoxError(f"could not update '{name}': {e}\n"
+                           "(tip: memory can't be set below what the "
+                           "container is currently using)")
+    if memory:
+        state[name]["memory"] = memory
+    if cpus:
+        state[name]["cpus"] = str(cpus)
+    save_state(state)
+    return state[name]
 
 
 def op_list():
@@ -307,6 +340,14 @@ def op_list():
         except TrueBoxError:
             running = ""
         info["running"] = bool(running)
+        # Writable-layer disk usage (Docker has no portable per-container
+        # hard disk quota, so we show usage instead of faking one).
+        try:
+            size = docker("ps", "--filter", f"name={info['container']}",
+                          "--size", "--format", "{{.Size}}")
+            info["disk"] = size.strip().split("\n")[0] if size.strip() else "-"
+        except TrueBoxError:
+            info["disk"] = "-"
     return state
 
 
@@ -416,6 +457,7 @@ button:disabled { opacity: .5; cursor: default; }
         <select id="f-mem"><option>1g</option><option selected>2g</option><option>4g</option><option>8g</option></select></div>
       <div class="field"><label>CPU</label>
         <select id="f-cpu"><option>1</option><option selected>2</option><option>4</option></select></div>
+      <div class="field"><label>GPU（可选）</label><input id="f-gpus" placeholder="all，需宿主机 N 卡" style="width:130px"></div>
       <div class="field"><label>&nbsp;</label><button id="btn-create" onclick="createWs()">启动工作区</button></div>
     </div>
   </div>
@@ -450,11 +492,12 @@ async function refresh() {
 function card(n, w) {
   const pill = w.running ? '<span class="pill on">运行中</span>' : '<span class="pill off">已停止</span>';
   return `<div class="card"><h3>${esc(n)} ${pill}</h3>
-    <div class="meta">内存 <b>${esc(w.memory || '-')}</b> · CPU <b>${esc(w.cpus || '-')}</b><br>
+    <div class="meta">内存 <b>${esc(w.memory || '-')}</b> · CPU <b>${esc(w.cpus || '-')}</b>${w.gpus ? ' · GPU <b>' + esc(w.gpus) + '</b>' : ''} · 磁盘 <b>${esc(w.disk || '-')}</b><br>
     CDP 端口 <b>${esc(w.cdp_port || '-')}</b> · 创建于 ${esc(w.created || '-')}</div>
     <div class="btnrow">
       <button class="ghost" onclick="shot('${esc(n)}')">截图</button>
       <button class="ghost" onclick="execDlg('${esc(n)}')">执行命令</button>
+      <button class="ghost" onclick="updDlg('${esc(n)}')">调整配额</button>
       <button class="ghost" onclick="vnc('${esc(n)}','${esc(w.vnc_port || '')}')">浏览器查看</button>
       <button class="danger" onclick="delWs('${esc(n)}')">删除</button>
     </div></div>`;
@@ -466,8 +509,10 @@ async function createWs() {
   try {
     await api('/workspaces', { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ name, memory: document.getElementById('f-mem').value,
-                             cpus: document.getElementById('f-cpu').value }) });
+                             cpus: document.getElementById('f-cpu').value,
+                             gpus: document.getElementById('f-gpus').value.trim() || null }) });
     document.getElementById('f-name').value = '';
+    document.getElementById('f-gpus').value = '';
     toast('工作区 ' + name + ' 已启动'); refresh();
   } catch (e) { toast('启动失败: ' + e.message); }
   btn.disabled = false; btn.textContent = '启动工作区';
@@ -502,6 +547,25 @@ async function runExec(n) {
     out.textContent = '$ ' + cmd + '\\n' + (r.stdout || '') + (r.stderr ? '\\n[stderr]\\n' + r.stderr : '')
       + '\\n[exit ' + r.returncode + ']';
   } catch (e) { out.textContent = '失败: ' + e.message; }
+}
+function updDlg(n) {
+  openDlg('调整配额 — ' + n,
+    `<div class="row">
+       <div class="field"><label>内存</label>
+         <select id="upd-mem"><option>1g</option><option>2g</option><option>4g</option><option>8g</option></select></div>
+       <div class="field"><label>CPU</label>
+         <select id="upd-cpu"><option>0.5</option><option>1</option><option>2</option><option>4</option></select></div>
+       <div class="field"><label>&nbsp;</label><button onclick="runUpd('${esc(n)}')">应用（无需重启）</button></div>
+     </div><p style="color:var(--dim);font-size:12px">内存不能调到低于当前已用量的值。</p>`);
+}
+async function runUpd(n) {
+  try {
+    await api('/workspaces/' + encodeURIComponent(n) + '/update',
+      { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ memory: document.getElementById('upd-mem').value,
+                               cpus: document.getElementById('upd-cpu').value }) });
+    closeModal(); toast('配额已更新 ' + n); refresh();
+  } catch (e) { toast('更新失败: ' + e.message); }
 }
 function vnc(n, port) {
   if (!port) { toast('VNC 端口未知'); return; }
@@ -555,11 +619,17 @@ def cmd_build(args):
 
 
 def cmd_up(args):
-    info = op_up(args.name, args.memory, args.cpus)
+    info = op_up(args.name, args.memory, args.cpus, args.gpus)
     print(f"workspace '{args.name}' is up")
     print(f"  CDP (agent browser control): 127.0.0.1:{info['cdp_port']}")
     print(f"  noVNC (watch in browser)   : http://127.0.0.1:{info['vnc_port']}/vnc.html")
     print(f"  shell: docker exec -it {info['container']} bash")
+
+
+def cmd_update(args):
+    info = op_update(args.name, args.memory, args.cpus)
+    print(f"workspace '{args.name}' updated: "
+          f"memory={info['memory']} cpus={info['cpus']} (no restart needed)")
 
 
 def cmd_list(args):
@@ -567,11 +637,13 @@ def cmd_list(args):
     if not state:
         print("no workspaces. create one: python truebox.py up --name demo")
         return
-    print(f"{'NAME':<16}{'CONTAINER':<24}{'CDP':<8}{'CREATED'}")
+    print(f"{'NAME':<16}{'CONTAINER':<24}{'CDP':<8}{'MEM':<8}{'CPU':<6}{'DISK':<22}CREATED")
     for name, info in state.items():
         mark = "" if info.get("running") else " (stopped)"
         print(f"{name:<16}{info['container']:<24}"
-              f"{info.get('cdp_port', '-'):<8}{info.get('created', '-')}{mark}")
+              f"{info.get('cdp_port', '-'):<8}{info.get('memory', '-'):<8}"
+              f"{info.get('cpus', '-'):<6}{info.get('disk', '-'):<22}"
+              f"{info.get('created', '-')}{mark}")
 
 
 def cmd_exec(args):
@@ -609,6 +681,7 @@ def cmd_serve(args):
     def api_info():
         return {"name": "TrueBox 云真机", "version": VERSION,
                 "ui": "/", "endpoints": ["GET /workspaces", "POST /workspaces",
+                "POST /workspaces/{name}/update",
                 "POST /workspaces/{name}/exec", "GET /workspaces/{name}/screenshot",
                 "DELETE /workspaces/{name}"]}
 
@@ -620,7 +693,16 @@ def cmd_serve(args):
     def api_up(body: dict):
         name = body.get("name") or f"ws-{os.urandom(3).hex()}"
         try:
-            info = op_up(name, body.get("memory", "2g"), str(body.get("cpus", "2")))
+            info = op_up(name, body.get("memory", "2g"), str(body.get("cpus", "2")),
+                         body.get("gpus"))
+        except TrueBoxError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"name": name, **info}
+
+    @app.post("/workspaces/{name}/update")
+    def api_update(name: str, body: dict):
+        try:
+            info = op_update(name, body.get("memory"), body.get("cpus"))
         except TrueBoxError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
         return {"name": name, **info}
@@ -679,7 +761,15 @@ def main():
     p.add_argument("--name", required=True)
     p.add_argument("--memory", default="2g", help="e.g. 2g (default: 2g)")
     p.add_argument("--cpus", default="2", help="e.g. 2 (default: 2)")
+    p.add_argument("--gpus", default=None,
+                   help="e.g. all (needs NVIDIA Container Toolkit on host)")
     p.set_defaults(func=cmd_up)
+
+    p = sub.add_parser("update", help="change memory/CPU of a running workspace")
+    p.add_argument("name")
+    p.add_argument("--memory", default=None, help="e.g. 4g")
+    p.add_argument("--cpus", default=None, help="e.g. 1")
+    p.set_defaults(func=cmd_update)
 
     p = sub.add_parser("list", help="list workspaces")
     p.set_defaults(func=cmd_list)
