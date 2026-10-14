@@ -44,6 +44,15 @@ jobs:
           python3 truebox.py down ci
           echo "SMOKE OK"
 
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          echo "=== truebox-ci ==="
+          docker logs truebox-ci 2>&1 | tail -50 || true
+          echo "=== truebox-ci-api ==="
+          docker logs truebox-ci-api 2>&1 | tail -50 || true
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: smoke
