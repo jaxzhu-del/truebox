@@ -32,7 +32,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -95,16 +95,29 @@ def host_port(container, container_port):
     raise TrueBoxError(f"could not parse port mapping: {out!r}")
 
 
-def wait_cdp(port, timeout=90):
+def wait_cdp(port, timeout=180):
+    """Wait until Chromium's remote-debugging endpoint answers.
+
+    First cold start (fresh profile + fontconfig cache) can take well over
+    a minute on shared CI runners, so the default is generous.
+    """
     url = f"http://127.0.0.1:{port}/json/version"
     deadline = time.time() + timeout
+    waited = 0
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=3) as r:
                 if r.status == 200:
+                    if waited:
+                        print(f"  CDP is up after {waited}s")
                     return True
         except Exception:
-            time.sleep(1)
+            pass
+        time.sleep(2)
+        waited += 2
+        if waited % 20 == 0:
+            print(f"  ... still waiting for Chromium CDP ({waited}s/{timeout}s)",
+                  flush=True)
     return False
 
 
@@ -251,6 +264,8 @@ def op_up(name, memory="2g", cpus="2"):
     except TrueBoxError:
         raise TrueBoxError("container started but port mapping unreadable; "
                            f"check `docker logs {c}`")
+    print(f"waiting for Chromium remote debugging on 127.0.0.1:{port} ...",
+          flush=True)
     if not wait_cdp(port):
         try:
             logs = docker("logs", "--tail", "30", c)
