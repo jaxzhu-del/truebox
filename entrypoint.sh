@@ -24,12 +24,16 @@ echo "Xvfb is up on :99"
 
 # 3. headed Chromium with remote debugging for agents (CDP on :9222).
 #    --disable-gpu: Xvfb has no GPU anyway; avoids GPU-process crashes in containers.
+#    --remote-debugging-address=0.0.0.0: CRITICAL for Docker. Chromium binds CDP to
+#    127.0.0.1 by default, but Docker's port forwarding (docker-proxy) dials the
+#    container's eth0 IP, not its loopback -- without this flag the published
+#    port is unreachable from the host. Never remove this flag.
 #    Chromium's stdout/stderr go to the container log (visible via `docker logs`).
-echo "starting Chromium (headed, CDP on :9222)..."
+echo "starting Chromium (headed, CDP on :9222, bound to 0.0.0.0)..."
 exec chromium \
   --display=:99 \
   --no-sandbox --disable-dev-shm-usage --disable-gpu \
-  --remote-debugging-port=9222 \
+  --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
   --user-data-dir=/home/agent/.chromium \
   --no-first-run --no-default-browser-check \
   --disable-features=Translate \

@@ -32,7 +32,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.2"
+VERSION = "0.2.3"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -271,8 +271,17 @@ def op_up(name, memory="2g", cpus="2"):
             logs = docker("logs", "--tail", "30", c)
         except TrueBoxError:
             logs = "(could not read container logs)"
+        # Distinguish "Chromium is down" from "bind/port-forward issue":
+        # check CDP from INSIDE the container (bypasses docker-proxy).
+        try:
+            inside = docker("exec", c, "sh", "-c",
+                            "curl -s -m 5 127.0.0.1:9222/json/version | head -c 200")
+            inside = inside or "(empty reply from in-container CDP)"
+        except TrueBoxError as e:
+            inside = f"(in-container CDP check failed: {e})"
         raise TrueBoxError(
             "Chromium remote debugging did not come up in time.\n"
+            f"--- in-container CDP check ---\n{inside}\n"
             f"--- docker logs {c} (tail 30) ---\n{logs}")
     vnc_port = host_port(c, 6080)
     info = {"container": c, "cdp_port": port, "vnc_port": vnc_port,
