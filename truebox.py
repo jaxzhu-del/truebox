@@ -313,7 +313,9 @@ def op_update(name, memory=None, cpus=None):
         raise TrueBoxError(f"no workspace '{name}'")
     args = []
     if memory:
-        args += ["--memory", memory]
+        # Keep --memory-swap == --memory (same invariant as op_up):
+        # the daemon refuses a memory limit higher than the swap limit.
+        args += ["--memory", memory, "--memory-swap", memory]
     if cpus:
         args += ["--cpus", str(cpus)]
     c = state[name]["container"]
