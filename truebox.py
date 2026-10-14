@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -255,6 +256,9 @@ def cdp_screenshot(cdp_port, timeout=30):
 
 def op_up(name, memory="2g", cpus="2", gpus=None):
     state = load_state()
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$", name):
+        raise TrueBoxError(f"bad workspace name '{name}': "
+                           "use letters, digits, and _ . - only")
     if name in state:
         raise TrueBoxError(f"workspace '{name}' already exists "
                            f"(truebox.py down {name} first)")
@@ -714,6 +718,14 @@ def cmd_serve(args):
         cmd = body.get("cmd")
         if not cmd:
             return JSONResponse({"error": "body.cmd required, e.g. {\"cmd\": [\"ls\", \"/workspace\"]}"},
+                                status_code=400)
+        if isinstance(cmd, str):
+            # Be liberal with what agents send: accept a plain string too.
+            cmd = shlex.split(cmd)
+        if not isinstance(cmd, list) or not cmd or \
+                not all(isinstance(x, str) for x in cmd):
+            return JSONResponse({"error": "body.cmd must be an array of strings "
+                                          "or a plain command string"},
                                 status_code=400)
         state = load_state()
         if name not in state:
