@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main, dev]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -73,8 +74,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name truebox truebox.py
+      - name: Build executable
+        shell: bash
+        run: |
+          pip install pyinstaller
+          SEP=":"; [ "$RUNNER_OS" = "Windows" ] && SEP=";"
+          pyinstaller --onefile --name truebox \
+            --add-data "Dockerfile${SEP}." \
+            --add-data "entrypoint.sh${SEP}." \
+            truebox.py
 
       - name: Rename asset
         shell: bash

@@ -24,10 +24,12 @@ import base64
 import json
 import os
 import re
+import shutil
 import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -523,14 +525,32 @@ refresh(); setInterval(refresh, 8000);
 
 # ---------------------------------------------------------------- CLI
 
+def bundled_file(name):
+    """Path to a data file: inside the PyInstaller bundle when frozen,
+    otherwise relative to the current directory (repo checkout)."""
+    base = getattr(sys, "_MEIPASS", None)
+    return os.path.join(base, name) if base else name
+
+
 def cmd_build(args):
     print(f"building {IMAGE} (multi-arch debian base; first build takes a few minutes)...")
+    ctx, tmp = ".", None
+    if getattr(sys, "frozen", False):
+        # Running as a PyInstaller exe: Dockerfile/entrypoint.sh are bundled
+        # data files (--add-data), so stage them into a temp build context.
+        tmp = tempfile.mkdtemp(prefix="truebox-build-")
+        for f in ("Dockerfile", "entrypoint.sh"):
+            shutil.copy(bundled_file(f), tmp)
+        ctx = tmp
     try:
-        subprocess.run(["docker", "build", "-t", IMAGE, "."], check=True)
+        subprocess.run(["docker", "build", "-t", IMAGE, ctx], check=True)
     except FileNotFoundError:
         raise TrueBoxError("docker not found")
     except subprocess.CalledProcessError:
         raise TrueBoxError("docker build failed")
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
     print("done.")
 
 
