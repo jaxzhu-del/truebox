@@ -1,0 +1,4 @@
+# Only needed for `python truebox.py serve` (HTTP API for agents).
+# The CLI itself (up/exec/screenshot/down) is stdlib-only.
+fastapi
+uvicorn

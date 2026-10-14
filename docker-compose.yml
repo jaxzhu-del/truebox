@@ -1,0 +1,16 @@
+# Quick manual trial of a single TrueBox workspace (no CLI needed).
+# Full control plane: python3 truebox.py up --name demo
+services:
+  workspace:
+    build: .
+    image: truebox/workspace:latest
+    mem_limit: 2g
+    cpus: 2.0
+    ports:
+      - "127.0.0.1:9222:9222"   # CDP — agent browser control
+      - "127.0.0.1:6080:6080"   # noVNC — watch in your browser
+    volumes:
+      - truebox-data:/workspace
+
+volumes:
+  truebox-data:
