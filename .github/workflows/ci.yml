@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build workspace image
+        run: python3 truebox.py build
+
+      - name: Smoke test (up / exec / screenshot / API / down)
+        run: |
+          set -e
+          python3 truebox.py up --name ci --memory 1g --cpus 1
+          python3 truebox.py exec ci -- chromium --version
+          python3 truebox.py exec ci -- python3 --version
+          python3 truebox.py screenshot ci -o ci-shot.png
+          test -s ci-shot.png
+          pip install -r requirements.txt
+          python3 truebox.py serve --port 18790 &
+          SRV=$!
+          sleep 4
+          curl -sf http://127.0.0.1:18790/api
+          curl -sf http://127.0.0.1:18790/ -o ui.html
+          grep -q "TrueBox" ui.html
+          curl -sf -X POST http://127.0.0.1:18790/workspaces \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci-api","memory":"1g","cpus":"1"}'
+          curl -sf http://127.0.0.1:18790/workspaces/ci-api/screenshot -o ci-api-shot.png
+          test -s ci-api-shot.png
+          curl -sf -X DELETE http://127.0.0.1:18790/workspaces/ci-api
+          kill $SRV
+          python3 truebox.py down ci
+          echo "SMOKE OK"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: truebox-linux
+          - os: windows-latest
+            asset: truebox-windows.exe
+          - os: macos-latest
+            asset: truebox-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --name truebox truebox.py
+
+      - name: Rename asset
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            mv dist/truebox.exe "${{ matrix.asset }}"
+          else
+            mv dist/truebox "${{ matrix.asset }}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
