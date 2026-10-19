@@ -107,7 +107,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: smoke
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
