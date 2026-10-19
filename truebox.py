@@ -35,7 +35,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.6"
+VERSION = "0.2.7"
 IMAGE = "truebox/workspace:latest"
 PREFIX = "truebox-"
 STATE_DIR = Path.home() / ".truebox"
@@ -378,6 +378,13 @@ def op_down(name):
     if name not in state:
         raise TrueBoxError(f"no workspace '{name}'")
     docker("rm", "-f", state[name]["container"])
+    # `docker rm` leaves the named data volume behind: without this the
+    # volume is orphaned and leaks disk forever. The Web UI already
+    # promises 删除工作区 cleans container AND data — make it true.
+    try:
+        docker("volume", "rm", f"{PREFIX}{name}-data")
+    except TrueBoxError:
+        pass  # volume already gone (e.g. removed by hand) — not fatal
     del state[name]
     save_state(state)
 
